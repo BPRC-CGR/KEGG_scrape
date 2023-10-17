@@ -5,13 +5,13 @@ import os
 
 filtered_kegg = {}
 
+
 def get_file():
     # Can filter for other files is necessary
     current_cwd = os.getcwd()
     kegg_file = os.listdir(os.path.join(current_cwd, "input"))
     return os.path.join(current_cwd, "input", kegg_file[0])
-    
-    
+
 
 def parse_gene_data(data):
     kegg_dict = {}
@@ -43,16 +43,16 @@ def get_info(sub_list):
             id, description = element.split(" ", 1)
             pathways[id] = description
         except ValueError as e:
-            print(f"The following error was thrown {e}") 
+            print(f"The following error was thrown {e}")
     return pathways
 
 
 def add_info(id, kegg_variable, kegg_dict):
-        if id in filtered_kegg:
-            filtered_kegg[id].update({kegg_variable: kegg_dict})
-        else:
-            filtered_kegg[id] = {kegg_variable: kegg_dict}
-    
+    if id in filtered_kegg:
+        filtered_kegg[id].update({kegg_variable: kegg_dict})
+    else:
+        filtered_kegg[id] = {kegg_variable: kegg_dict}
+
 
 def get_gene_symbol(kegg_info, id):
     gene_symbol_dict = kegg_info.get("SYMBOL", -1)
@@ -60,12 +60,14 @@ def get_gene_symbol(kegg_info, id):
         symbol = [i.strip() for i in gene_symbol_dict.split(",")]
         add_info(id, "symbol", symbol)
 
+
 def get_name(kegg_info, id):
     name_dict = kegg_info.get("NAME", -1)
     if name_dict != -1:
         description = get_info(name_dict)
         description = description.pop('(RefSeq)', None)
         add_info(id, "description", description)
+
 
 def get_pathway(kegg_info, id):
     pathway_dict = kegg_info.get("PATHWAY", -1)
@@ -85,15 +87,13 @@ def get_brite(kegg_info, id):
                 brite[header] = []
             else:
                 brite[header].append(element)
-            add_info(id, "brite", brite)    
+            add_info(id, "brite", brite)
 
-
-            
 
 def write_kegg_data():
     with open("pathway.json", "w") as f:
         json.dump(filtered_kegg, f, indent=4)
-        
+
 
 def main():
     df = pd.read_excel(get_file())
@@ -109,7 +109,7 @@ def main():
             get_pathway(gene_dict, id)
             get_brite(gene_dict, id)
 
+
 if __name__ == "__main__":
     main()
     write_kegg_data()
-        
