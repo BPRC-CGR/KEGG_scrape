@@ -9,8 +9,14 @@ filtered_kegg = {}
 def get_file():
     # Can filter for other files is necessary
     current_cwd = os.getcwd()
-    kegg_file = os.listdir(os.path.join(current_cwd, "input"))
-    return os.path.join(current_cwd, "input", kegg_file[0])
+    kegg_file_path = os.listdir(os.path.join(current_cwd, "input"))
+    kegg_file = os.path.join(current_cwd, "input", kegg_file_path[0])
+    if kegg_file.endswith(".xlsx"):
+        df = pd.read_excel(kegg_file)
+    else:
+        df = pd.read_csv(kegg_file, sep=None, engine="python")
+    ids = df.iloc[:, 0].dropna()
+    return ids
 
 
 def parse_gene_data(data):
@@ -20,8 +26,7 @@ def parse_gene_data(data):
         if line.startswith("///"):
             break
         key, value = line.split(" ", 1)
-        key = key.strip()
-        value = value.strip()
+        key, value = key.strip(), value.strip()
         if key:
             current_key = key
         if current_key in kegg_dict:
@@ -35,16 +40,16 @@ def parse_gene_data(data):
 
 
 def get_info(sub_list):
-    pathways = {}
+    temp_dict = {}
     if isinstance(sub_list, str):
         sub_list = [sub_list]
     for element in sub_list:
         try:
             id, description = element.split(" ", 1)
-            pathways[id] = description
+            temp_dict[id] = description
         except ValueError as e:
             print(f"The following error was thrown {e}")
-    return pathways
+    return temp_dict
 
 
 def add_info(id, kegg_variable, kegg_dict):
@@ -96,8 +101,7 @@ def write_kegg_data():
 
 
 def main():
-    df = pd.read_excel(get_file())
-    ids = df.iloc[:, 0].dropna()
+    ids = get_file()
     for id in ids:
         if id.startswith("hsa"):
             print(f"Fetching {id}")
