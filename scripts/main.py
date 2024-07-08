@@ -6,10 +6,11 @@ from human_protein_atlas_scrape import get_ensamble_id, get_human_protein_atlas_
 
 
 class FileLoader:
-    def get_file(self):
-        current_cwd = Path.cwd()
-        kegg_file_path = (current_cwd / "input").iterdir()
-        kegg_file = kegg_file_path[0]
+    def get_file(self, file_path):
+        kegg_file = Path(file_path)
+        if not kegg_file.exists():
+            raise FileNotFoundError(f"The file {file_path} does not exist.")
+
         if kegg_file.suffix == ".xlsx":
             df = pd.read_excel(kegg_file)
         else:
@@ -96,7 +97,6 @@ class DataWriter:
         if file_type == "json":
             with open(f"{file_name}.json", "w") as f:
                 json.dump(data, f, indent=4)
-        # You can add more file types here
 
 
 class KeggAnalyzer:
@@ -106,8 +106,8 @@ class KeggAnalyzer:
         self.info_builder = InfoBuilder()
         self.data_writer = DataWriter()
 
-    def main(self):
-        ids = self.file_loader.get_file()
+    def main(self, file_path):
+        ids = self.file_loader.get_file(file_path)
         for id in ids:
             if id.startswith("hsa"):
                 print(f"Fetching {id}")

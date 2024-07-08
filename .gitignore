@@ -160,6 +160,7 @@ pathway.json
 
 # Input folder
 input/*
+data/*
 
 # Demo folder
 demo/*
