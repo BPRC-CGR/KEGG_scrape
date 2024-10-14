@@ -2,12 +2,12 @@ import requests
 import pandas as pd
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from time import sleep
-from logger import custom_logger
 import signal
 import sys
 
-# Logger for tracking the state of the program
+from time import sleep
+from logger import custom_logger
+
 logger = custom_logger(__name__)
 
 
@@ -139,11 +139,11 @@ class KeggIdFetcher:
         return df_cleaned
 
 
-def process_files():
+def process_files(directory="data"):
     """Main function to process Excel files and enrich data with KEGG/UniProt IDs."""
     cwd = Path.cwd()
     fetcher = KeggIdFetcher()
-    files = (cwd / 'data').glob("Significant*")
+    files = (cwd / directory).glob("Significant*")
 
     for file in files:
         output_file = Path(f'{file.with_suffix("")}_extended.xlsx')
