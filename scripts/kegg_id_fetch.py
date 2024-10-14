@@ -1,150 +1,169 @@
 import requests
-import json
 import pandas as pd
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import sleep
 from logger import custom_logger
+import signal
+import sys
 
-# Method for logger current states of the program.
+# Logger for tracking the state of the program
 logger = custom_logger(__name__)
 
 
-def find_kegg_entry(data):
-    """Extract the first KEGG entry from UniProtKB cross-reference data."""
-    # Iterate through results and find the first KEGG database entry
-    for result in data.get('results', []):
-        for entry in result.get('uniProtKBCrossReferences', []):
-            if entry['database'] == 'KEGG':
-                return entry
-    return None
+class KeggIdFetcher:
+    def __init__(self, max_workers=5):
+        self.max_workers = max_workers
+        self.keep_running = True
+        signal.signal(signal.SIGINT, self.signal_handler)
 
+    def signal_handler(self, sig, frame):
+        """Handle Ctrl+C (KeyboardInterrupt) gracefully."""
+        logger.warning(
+            "KeyboardInterrupt received. Shutting down gracefully...")
+        self.keep_running = False
+        sys.exit(0)
 
-def fetch_kegg_id(gene_symbol: str) -> str:
-    logger.info(f"Getting KEGG ID for {gene_symbol}, with KEGG.")
-    """
-    Get KEGG ID for a given gene symbol by querying the KEGG API.
+    def find_kegg_entry(self, data):
+        """Extract the first KEGG entry from UniProtKB cross-reference data."""
+        for result in data.get('results', []):
+            for entry in result.get('uniProtKBCrossReferences', []):
+                if entry['database'] == 'KEGG':
+                    return entry
+        return None
 
-    Parameters:
-    gene_symbol (str): The gene symbol for which to retrieve the KEGG ID.
-
-    Returns:
-    str: The KEGG ID associated with the gene symbol if found, otherwise an empty string.
-    """
-    url = f"http://rest.kegg.jp/find/genes/{gene_symbol}"
-    try:
-        response = requests.get(url)
-        # Raises an HTTPError for the response returned a 4xx or 5xx status code
-        response.raise_for_status()
-        lines = response.text.strip().split('\n')
-        for line in lines:
-            if line.startswith('hsa:'):
-                kegg_id, genes = line.split('\t')
-                splitted_genes = genes.split(';')
-                if len(splitted_genes) == 2:
-                    gene_list = [gene.strip()
-                                 for gene in splitted_genes[0].split(',')]
-                    if gene_symbol in gene_list:
-                        logger.result(f"Found KEGG ID: {kegg_id}")
+    def fetch_kegg_id(self, gene_symbol: str, species: str) -> str:
+        """Get KEGG ID for a given gene symbol by querying the KEGG API."""
+        logger.info(f"Getting KEGG ID for {gene_symbol} in {species}.")
+        url = f"http://rest.kegg.jp/find/genes/{gene_symbol}"
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            lines = response.text.strip().split('\n')
+            for line in lines:
+                if line.startswith(f'{species}:'):
+                    kegg_id, genes = line.split('\t')
+                    if gene_symbol in genes.split(';')[0]:
+                        logger.info(f"Found KEGG ID: {kegg_id}")
                         return kegg_id
-    except requests.HTTPError as e:
-        logger.error(f"HTTP error occurred: {e}")
-    except requests.RequestException as e:
-        logger.error(f"Request error: {e}")
-    logger.warning(f"No hit found with KEGG!")
-    return "No hit"
+        except requests.HTTPError as e:
+            logger.error(f"HTTP error occurred: {e}")
+        except requests.RequestException as e:
+            logger.error(f"Request error: {e}")
+        logger.warning(f"No KEGG hit found for {gene_symbol} in {species}.")
+        return "No hit"
+
+    def fetch_uniprot_kegg_id(self, gene_symbol, species_code):
+        """Fetch UniProt ID for a gene symbol and species code using UniProt API."""
+        logger.info(
+            f"Fetching UniProt KEGG ID for {gene_symbol} in species {species_code}.")
+        base_url = "https://rest.uniprot.org"
+        search_params = {
+            'query': f'gene:"{gene_symbol}" AND organism_id:{species_code} AND reviewed:true',
+            'format': 'json',
+            'size': 1
+        }
+        try:
+            response = requests.get(
+                f"{base_url}/uniprotkb/search", params=search_params)
+            response.raise_for_status()
+            data = response.json()
+            kegg_entry = self.find_kegg_entry(data)
+            if kegg_entry:
+                kegg_id = kegg_entry.get("id", "No KEGG ID found")
+                logger.info(f"Found UniProt KEGG ID: {kegg_id}")
+                return kegg_id
+            logger.warning(
+                f"No UniProt hit found for {gene_symbol} in species {species_code}.")
+        except requests.HTTPError as e:
+            logger.error(f"HTTP error occurred: {e}")
+        except requests.RequestException as e:
+            logger.error(f"Request error: {e}")
+        return "No hit"
+
+    def fetch_kegg_ids(self, gene_symbol):
+        """Fetch KEGG and UniProt IDs for human and chimp species."""
+        human_uniprot_id = self.fetch_uniprot_kegg_id(gene_symbol, '9606')
+        human_kegg_id = self.fetch_kegg_id(gene_symbol, 'hsa')
+        chimp_uniprot_id = self.fetch_uniprot_kegg_id(gene_symbol, '9598')
+        chimp_kegg_id = self.fetch_kegg_id(gene_symbol, 'ptr')
+        return (human_uniprot_id, human_kegg_id, chimp_uniprot_id, chimp_kegg_id)
+
+    def get_kegg_id_multiple(self, row):
+        """Process a row to retrieve KEGG and UniProt IDs for each gene symbol."""
+        gene_symbol = row["Gene_Symbol"].strip()
+        human_uniprot_list, human_kegg_list = [], []
+        chimp_uniprot_list, chimp_kegg_list = [], []
+
+        if not self.keep_running:
+            return row  # Gracefully exit if interrupted
+
+        # Create ThreadPoolExecutor here and ensure it's shut down properly
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            futures = []
+            for symbol in gene_symbol.split("/"):
+                symbol = symbol.partition(' ')[0].replace('-', '')
+                futures.append(executor.submit(self.fetch_kegg_ids, symbol))
+
+            for future in as_completed(futures):
+                try:
+                    if not self.keep_running:
+                        break
+                    human_uniprot_id, human_kegg_id, chimp_uniprot_id, chimp_kegg_id = future.result()
+                    human_uniprot_list.append(human_uniprot_id)
+                    human_kegg_list.append(human_kegg_id)
+                    chimp_uniprot_list.append(chimp_uniprot_id)
+                    chimp_kegg_list.append(chimp_kegg_id)
+                except Exception as e:
+                    logger.error(f"Error in thread execution: {e}")
+
+        row["KEGG_ID_UNIPROT_HUMAN"] = "/".join(human_uniprot_list)
+        row["KEGG_ID_HUMAN"] = "/".join(human_kegg_list)
+        row["KEGG_ID_UNIPROT_CHIMP"] = "/".join(chimp_uniprot_list)
+        row["KEGG_ID_CHIMP"] = "/".join(chimp_kegg_list)
+        sleep(2)
+        return row
+
+    def clean_and_filter_df(self, df):
+        """Clean and filter the DataFrame based on RNA and miRNA patterns."""
+        df_cleaned = df[["Gene_Accession",
+                         "Gene_Symbol", "Gene_Description"]].dropna()
+        df_cleaned = df_cleaned[~df_cleaned.isin(['---']).any(axis=1)]
+
+        rna_pattern = r'\b(?:RNA|miRNA|mir|RN|Y_RNA)\b(?!\s+polymerase|\s+binding)'
+        df_cleaned = df_cleaned[
+            ~df_cleaned['Gene_Symbol'].str.contains(rna_pattern, case=False, na=False) &
+            ~df_cleaned['Gene_Description'].str.contains(
+                rna_pattern, case=False, na=False)
+        ]
+        return df_cleaned
 
 
-def fetch_uniprot_kegg_id(gene_symbol):
-    logger.info(f"Getting KEGG ID for {gene_symbol}, with Uniprot.")
-    """Fetch UniProt ID for a human gene symbol and print its associated KEGG ID."""
-    base_url = "https://rest.uniprot.org"
-    search_params = {
-        'query': f'gene:"{gene_symbol}" AND organism_id:9606 AND reviewed:true',
-        'format': 'json',
-        'size': 1
-    }
-    response = requests.get(
-        f"{base_url}/uniprotkb/search", params=search_params)
-    if response.status_code == 200:
-        data = response.json()
-        kegg_entry = find_kegg_entry(data)
-        if kegg_entry:
-            kegg_id_uniprot = kegg_entry.get("id", "No KEGG ID found")
-            logger.result(f"Found KEGG ID: {kegg_id_uniprot}")
-            return kegg_id_uniprot
+def process_files():
+    """Main function to process Excel files and enrich data with KEGG/UniProt IDs."""
+    cwd = Path.cwd()
+    fetcher = KeggIdFetcher()
+    files = (cwd / 'data').glob("Significant*")
+
+    for file in files:
+        output_file = Path(f'{file.with_suffix("")}_extended.xlsx')
+        if not output_file.is_file():
+            excel_sheets = pd.ExcelFile(file)
+            if "Analysis" in excel_sheets.sheet_names:
+                logger.info(f"Processing {file}")
+
+                df = pd.read_excel(file, sheet_name='Analysis')
+                filtered_df = fetcher.clean_and_filter_df(df)
+                kegg_id_df = filtered_df.apply(
+                    fetcher.get_kegg_id_multiple, axis=1)
+
+                result = pd.merge(df, kegg_id_df, on=[
+                                  "Gene_Accession", "Gene_Symbol", "Gene_Description"], how='outer')
+                result.to_excel(output_file, index=False)
         else:
-            logger.warning(f"No hit found with Uniprot!")
-            return "No hit"
-    else:
-        logger.error(f"Failed to retrieve data: HTTP {response.status_code}")
-        logger.error("Response details:", response.text)
-
-
-def fetch_human_kegg_id(gene_symbol):
-    uniprot_id = fetch_uniprot_kegg_id(gene_symbol)
-    kegg_id = fetch_kegg_id(gene_symbol)
-    return uniprot_id, kegg_id
-
-
-def get_kegg_id_multiple(row):
-    """
-    Get KEGG IDs for multiple gene symbols.
-    """
-    gene_symbol = row["Gene_Symbol"]
-    filter_gene_symbol = gene_symbol.strip()
-    uniprot_id, kegg_id = fetch_human_kegg_id(filter_gene_symbol)
-    row["KEGG_ID_UNIPROT"] = uniprot_id
-    row["KEGG_ID"] = kegg_id
-    sleep(2)
-    return row
-
-
-def clean_and_filter_df(df):
-    """
-    Cleans and filters the DataFrame by:
-    1. Selecting specific columns.
-    2. Removing rows with any NaN values.
-    3. Removing rows where any cell contains '---'.
-    4. Excluding rows where 'Gene_Symbol' or 'Gene_Description' contains RNA-related terms.
-
-    Parameters:
-    df (pd.DataFrame): The input DataFrame.
-
-    Returns:
-    pd.DataFrame: The cleaned and filtered DataFrame.
-    """
-    # Select relevant columns and drop any rows with NaN values
-    df_cleaned = df[["Gene_Accession",
-                     "Gene_Symbol", "Gene_Description"]].dropna()
-
-    # Remove rows containing '---' in any column
-    df_cleaned = df_cleaned[~df_cleaned.isin(['---']).any(axis=1)]
-
-    # Regex pattern to match RNA-related terms
-    rna_pattern = r'\b(?:RNA|miRNA|mir|RN|Y_RNA)\b(?!\s+polymerase|\s+binding)'
-
-# Filter the DataFrame to exclude RNA-related terms in 'Gene_Symbol' or 'Gene_Description'
-    df_cleaned = df_cleaned[
-        ~df_cleaned['Gene_Symbol'].str.contains(rna_pattern, case=False, na=False) &
-        ~df_cleaned['Gene_Description'].str.contains(
-            rna_pattern, case=False, na=False)
-    ]
-
-    return df_cleaned
+            logger.info(
+                f"Analysis file {output_file} already exists! Skipping!")
 
 
 if __name__ == '__main__':
-    cwd = Path.cwd()
-    files = (cwd / 'data').glob("Significant*")
-    # files = [cwd / 'data' / 'Significant_PK_iRBCvsuRBC_spleen_analysis.xlsx']
-    for file in files:
-        excel_sheets = pd.ExcelFile(file)
-        if "Analysis" in excel_sheets.sheet_names:
-            logger.info(f"Processing {file}")
-            df = pd.read_excel(file, sheet_name='Analysis')
-            filtered_df = clean_and_filter_df(df)
-            kegg_id_df = filtered_df.apply(get_kegg_id_multiple, axis=1)
-            result = pd.merge(df, kegg_id_df, on=[
-                "Gene_Accession", "Gene_Symbol", "Gene_Description"], how='outer')
-            result.to_excel(
-                f'{file.with_suffix("")}_extended.xlsx', index=False)
+    process_files()
